@@ -11,6 +11,11 @@ use msg_generated::deno as msg;
 use std::ffi::CStr;
 use std::path::Path;
 
+use tokio::prelude::future;
+use hyper;
+use hyper::Client;
+use hyper::rt::{self, Future, Stream};
+
 // Help. Is there a way to do this without macros?
 // Want: fn str_from_ptr(*const c_char) -> &str
 macro_rules! str_from_ptr {
@@ -151,6 +156,68 @@ pub extern "C" fn handle_code_cache(
     reply_error(d, cmd_id, &errmsg);
   }
   // null response indicates success.
+}
+
+// Fetch!
+#[no_mangle]
+pub extern "C" fn handle_fetch_req(
+  d: *const DenoC,
+  cmd_id: u32,
+  id: u32,
+  url_: *const c_char,
+) {
+  let req = fetch_url(d, cmd_id, id.clone(), url_);
+  rt::run(req);
+}
+
+fn fetch_url(
+  d: *const DenoC,
+  cmd_id: u32,
+  id: u32,
+  url_: *const c_char,
+) -> impl Future<Item=(), Error=()> {
+  let url = str_from_ptr!(url_).parse::<hyper::Uri>().unwrap();
+  let client = Client::new();
+
+  client
+    // Fetch the url...
+    .get(url)
+    // And then, if we get a response back...
+    .map(move |res| {
+      // asynchronously concatenate chunks of the body
+      res.into_body().concat2()
+        .map(|body| {
+          // let b = str::from_utf8(&body).unwrap();
+          let status = res.status().as_u16() as i32;
+          let headers = res.headers();
+          let b = String::from_utf8_lossy(&body).to_string();
+
+          let mut builder = flatbuffers::FlatBufferBuilder::new();
+          let msg = msg::CreateFetchRes(
+            &mut builder,
+            &msg::FetchResArgs {
+              id,
+              status,
+          //   &status,
+          //   &headers,
+          //   &body
+              ..Default::default()
+            },
+          );
+          builder.finish(msg);
+          send_base(
+            d,
+            &mut builder,
+            &msg::BaseArgs {
+              msg: Some(msg.union()),
+              msg_type: msg::Any::FetchRes,
+              ..Default::default()
+            },
+          );
+        });
+    })
+    .map_err(|err| {
+    })
 }
 
 fn set_timeout<F>(
