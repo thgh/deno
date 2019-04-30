@@ -174,7 +174,7 @@ limited to closures.
 Bad
 
 ```ts
-export const foo(): string => {
+export const foo = (): string => {
   return "bar";
 }
 ```
